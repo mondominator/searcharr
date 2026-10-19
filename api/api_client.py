@@ -106,7 +106,9 @@ class ApiClient(object):
             str: Formatted API URL string with endpoint placeholder
         """
         if self.service_name == "sonarr":
-            if self.version and self.version.startswith("4."):
+            # Sonarr 3 introduced /api/v3 and every later major (4, 5, ...)
+            # keeps it; only Sonarr 2 needs the legacy path.
+            if self._major_version() >= 3:
                 return f"{api_url}/api/v3/{{endpoint}}?apikey={api_key}"
             return f"{api_url}/api/{{endpoint}}?apikey={api_key}"
         elif self.service_name == "radarr":
@@ -116,6 +118,12 @@ class ApiClient(object):
         else:
             # Default format if service is unknown
             return f"{api_url}/api/{{endpoint}}?apikey={api_key}"
+
+    def _major_version(self):
+        try:
+            return int(str(self.version).split(".")[0])
+        except ValueError:
+            return 0
 
     def get_root_folders(self):
         """Get all root folders configured in the service.
