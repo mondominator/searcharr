@@ -24,6 +24,11 @@ from config.language import load_language
 
 class SearcharrBot:
     """Main Searcharr bot class that initializes and runs the Telegram bot."""
+
+    SERVICE_RETRY_FIRST_DELAY = 5
+    SERVICE_RETRY_MAX_DELAY = 60
+    SERVICE_RETRY_TOTAL = 600  # seconds of retrying before exiting
+    _sleep = staticmethod(time.sleep)
     
     def __init__(self, token, dev_mode=False, verbose=False):
         """Initialize the Searcharr bot.
@@ -76,26 +81,37 @@ class SearcharrBot:
             self.logger.info(f"{service_name.title()} is disabled in settings")
             return None
         
-        # Initialize service based on name
-        try:
-            if service_name == "sonarr":
-                from bot.services.sonarr_service import configure_sonarr
-                client = Sonarr(settings.sonarr_url, settings.sonarr_api_key, verbose)
-                return configure_sonarr(client)
-            
-            elif service_name == "radarr":
-                from bot.services.radarr_service import configure_radarr
-                client = Radarr(settings.radarr_url, settings.radarr_api_key, verbose)
-                return configure_radarr(client)
-            
-            else:
-                self.logger.error(f"Unknown service: {service_name}")
-                return None
-            
-        except Exception as e:
-            self.logger.error(f"Failed to initialize {service_name.title()}: {e}")
-            setattr(settings, f"{service_name}_enabled", False)
+        if service_name not in ("sonarr", "radarr"):
+            self.logger.error(f"Unknown service: {service_name}")
             return None
+
+        # Sonarr/Radarr are often still starting when the host boots. Disabling
+        # a service on the first failure left the bot running without it until
+        # someone restarted it, so retry, then exit and let Docker restart us.
+        waited = 0
+        delay = self.SERVICE_RETRY_FIRST_DELAY
+        while True:
+            try:
+                return self._connect_service(service_name, verbose)
+            except Exception as e:
+                if waited >= self.SERVICE_RETRY_TOTAL:
+                    self.logger.critical(
+                        f"{service_name.title()} still unreachable after {waited}s ({type(e).__name__}); exiting so the container restarts"
+                    )
+                    sys.exit(75)
+                self.logger.error(
+                    f"Failed to initialize {service_name.title()} ({type(e).__name__}); retrying in {delay}s"
+                )
+                self._sleep(delay)
+                waited += delay
+                delay = min(delay * 2, self.SERVICE_RETRY_MAX_DELAY)
+
+    def _connect_service(self, service_name, verbose):
+        if service_name == "sonarr":
+            from bot.services.sonarr_service import configure_sonarr
+            return configure_sonarr(Sonarr(settings.sonarr_url, settings.sonarr_api_key, verbose))
+        from bot.services.radarr_service import configure_radarr
+        return configure_radarr(Radarr(settings.radarr_url, settings.radarr_api_key, verbose))
     
     def _validate_settings(self):
         """Validate and set defaults for settings."""
